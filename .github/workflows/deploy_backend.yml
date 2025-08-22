@@ -16,10 +16,3 @@ jobs:
             cd /www/wwwroot/backend/adventurer-backend
             git fetch --all
             git reset --hard origin/main
-            source .venv/bin/activate
-            pip install -r requirements.txt
-            python manage.py migrate --noinput
-            python manage.py collectstatic --noinput
-            # Python 项目管理器：可用面板里设置的重启命令
-            # systemd:
-            sudo systemctl restart backend
