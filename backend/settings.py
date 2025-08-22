@@ -25,7 +25,7 @@ SECRET_KEY = 'django-insecure-sv6okwbi8bq&u46&d_=__#nqvc-zm&a5g*77fw7@^i1xrp=u)=
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = True
 
-ALLOWED_HOSTS = []
+ALLOWED_HOSTS = ["117.72.148.123"]
 
 # 媒体文件（用户上传）配置
 MEDIA_URL = '/media/'
