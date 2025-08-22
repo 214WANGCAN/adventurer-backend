@@ -1,0 +1,25 @@
+name: Deploy Backend
+on:
+  push:
+    branches: [ main ]
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: SSH deploy
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_KEY }}
+          script: |
+            cd /www/wwwroot/backend
+            git fetch --all
+            git reset --hard origin/main
+            source .venv/bin/activate
+            pip install -r requirements.txt
+            python manage.py migrate --noinput
+            python manage.py collectstatic --noinput
+            # Python 项目管理器：可用面板里设置的重启命令
+            # systemd:
+            sudo systemctl restart backend
