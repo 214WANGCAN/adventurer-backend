@@ -65,7 +65,10 @@ MIDDLEWARE = [
 
 
 # 允许 Vue 跨域访问（开发阶段）
-CORS_ALLOW_ALL_ORIGINS = True
+# CORS_ALLOW_ALL_ORIGINS = True
+
+CORS_ALLOW_CREDENTIALS = True
+CSRF_TRUSTED_ORIGINS = ['http://117.72.148.123']
 
 AUTH_USER_MODEL = 'users.CustomUser'
 
