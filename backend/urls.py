@@ -22,10 +22,10 @@ from django.conf import settings
 from django.conf.urls.static import static
 urlpatterns = [
     path('admin/', admin.site.urls),
-    path('api/users/', include('users.urls')),
-    path('api/tasks/', include('tasks.urls')),
-    path('api/notifications/', include('notifications.urls')),
-    path('api/upload', upload_image, name='api-upload'),
+    path('users/', include('users.urls')),
+    path('tasks/', include('tasks.urls')),
+    path('notifications/', include('notifications.urls')),
+    path('upload', upload_image, name='api-upload'),
 ]
 if settings.DEBUG:
     urlpatterns += static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
