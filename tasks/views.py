@@ -1,0 +1,301 @@
+# tasks/views.py
+
+from rest_framework import generics, status, permissions
+from rest_framework.views import APIView
+from rest_framework.response import Response
+from rest_framework.permissions import IsAuthenticated
+from django.shortcuts import get_object_or_404
+from django.utils import timezone
+
+from .models import Task
+from .serializers import TaskSerializer, TaskDetailSerializer
+from users.models import CustomUser  # 根据你的用户模块位置调整
+from .pagination import TaskPagination
+from notifications.utils import create_notification
+
+from django.db.models import Case, When, Value, IntegerField
+from django.utils import timezone
+from rest_framework import generics
+from django.conf import settings
+# 头部导入补充
+from django.db.models import Case, When, Value, IntegerField, Count, F
+
+from .utils import active_task_count
+
+
+def str_to_bool(value: str):
+    if value is None:
+        return None
+    return value.lower() in {"1", "true", "t", "yes", "y"}
+
+# 自定义权限类
+class IsStudent(permissions.BasePermission):
+    def has_permission(self, request, view):
+        return request.user.role == 'student'
+
+class IsTeacher(permissions.BasePermission):
+    def has_permission(self, request, view):
+        return request.user.role == 'teacher'
+
+class TaskListView(generics.ListAPIView):
+    serializer_class = TaskSerializer
+    permission_classes = [IsAuthenticated]
+    pagination_class = TaskPagination
+
+    def get_queryset(self):
+        user = self.request.user
+        user_level = user.calculate_level()
+
+        # 等级顺序映射 {"F":0, "E":1, ..., "SSS":7}
+        level_order = {lvl: i for i, (_, lvl) in enumerate(settings.LEVEL_THRESHOLDS)}
+        user_level_index = level_order[user_level]
+
+        params = self.request.query_params
+        level_param = params.get("level")  # 例如 ?level=E
+        is_completed_param = str_to_bool(params.get("is_completed"))  # ?is_completed=true/false
+        is_accepted_param = str_to_bool(params.get("is_accepted"))    # ?is_accepted=true/false
+        task_type_param = params.get("task_type")  # 可选：solo / team
+        include_expired = str_to_bool(params.get("include_expired"))  # 可选：包含过期
+
+        # 基础 queryset：默认仍按“未完成 + 未过期”
+        qs = Task.objects.all()
+
+        if is_completed_param is None:
+            qs = qs.filter(is_completed=False)
+        else:
+            qs = qs.filter(is_completed=is_completed_param)
+
+        if not include_expired:
+            qs = qs.filter(deadline__gte=timezone.now())
+
+        if level_param:
+            # 仅当 level 合法时才筛选
+            valid_levels = {lvl for _, lvl in settings.LEVEL_THRESHOLDS}
+            if level_param in valid_levels:
+                qs = qs.filter(required_level=level_param)
+
+        if is_accepted_param is not None:
+            qs = qs.filter(is_accepted=is_accepted_param)
+
+        if task_type_param in {"solo", "team"}:
+            qs = qs.filter(task_type=task_type_param)
+
+        # 注解 + 排序逻辑与原先一致
+        qs = qs.annotate(
+            # 是否高于用户等级：高于则 1，否则 0
+            above_user_level=Case(
+                When(
+                    required_level__in=[lvl for lvl, idx in level_order.items() if idx > user_level_index],
+                    then=Value(1)
+                ),
+                default=Value(0),
+                output_field=IntegerField()
+            ),
+            # 当前已接取人数
+            accepted_count=Count("accepted_by", distinct=True),
+            # 未满员的 solo 任务排前；其他仍按 is_accepted 排序
+            accepted_order=Case(
+                When(task_type="solo", accepted_count__lt=F("maximum_users"), then=Value(0)),
+                When(is_accepted=False, then=Value(0)),
+                default=Value(1),
+                output_field=IntegerField()
+            ),
+        ).order_by("above_user_level", "accepted_order", "-created_at")
+
+        return qs
+
+# 发布任务（老师）
+class TaskCreateView(generics.CreateAPIView):
+    serializer_class = TaskSerializer
+    permission_classes = [IsAuthenticated, IsTeacher]
+
+    def perform_create(self, serializer):
+        serializer.save(publisher=self.request.user)
+
+# 任务详情
+class TaskDetailView(generics.RetrieveAPIView):
+    queryset = Task.objects.all()
+    serializer_class = TaskDetailSerializer
+    permission_classes = [IsAuthenticated]
+    lookup_field = 'id'
+    lookup_url_kwarg = 'taskid'
+
+class ApplyTaskView(APIView):
+    permission_classes = [IsAuthenticated, IsStudent]
+
+    def post(self, request, taskid):
+        task = get_object_or_404(Task, id=taskid)
+
+        if task.is_completed:
+            return Response({'detail': '任务已结束'}, status=400)
+
+        if task.task_type == "team" and task.leader is not None or task.maximum_users <= task.accepted_by.count():
+            return Response({'detail': '任务已被他人申请'}, status=400)
+
+        if active_task_count(request.user) >= getattr(settings, 'MAX_ACTIVE_TASKS', 6):
+            return Response({'detail': '你已达到同时进行任务的上限（6个）'}, status=403)
+
+        # 从请求中获取 invited_identifiers（使用 identifier 而不是数据库 id）
+        invited_identifiers = request.data.get('invited_identifiers', [])
+        task.accepted_by.add(request.user)
+
+        if task.task_type == 'solo':
+            task.is_started = True
+            task.is_accepted = True
+
+        elif task.task_type == 'team':
+            task.leader = request.user
+            if not invited_identifiers:
+                task.is_started = True
+                task.is_accepted = True
+            else:
+                users = CustomUser.objects.filter(identifier__in=invited_identifiers)
+                if users.count() != len(invited_identifiers):
+                    return Response({'detail': '部分 identifier 无效或用户不存在'}, status=400)
+
+                task.invited_users.set(users)
+                task.is_accepted = True
+
+                # 给被邀请者发送通知
+                for user in users:
+                    create_notification(
+                        user=user,
+                        type='invite',
+                        message=f'你被 {request.user.nickname or request.user.username} 邀请加入任务《{task.title}》',
+                        task=task
+                    )
+
+        task.save()
+        return Response({'detail': '任务已申请成功'}, status=200)
+
+
+# 接受邀请（学生）
+class AcceptInvitationView(APIView):
+    permission_classes = [IsAuthenticated, IsStudent]
+
+    def post(self, request, taskid):
+        task = get_object_or_404(Task, id=taskid)
+
+        if request.user not in task.invited_users.all():
+            return Response({'detail': '你未被邀请'}, status=403)
+
+        # ✅ 新增：限制未完成任务数量
+        if active_task_count(request.user) >= getattr(settings, 'MAX_ACTIVE_TASKS', 6):
+            return Response({'detail': '你已达到同时进行任务的上限（6个）'}, status=403)
+
+        task.invited_users.remove(request.user)
+        task.accepted_by.add(request.user)
+        task.save()
+        return Response({'detail': '已接受邀请'}, status=200)
+
+# 拒绝邀请（学生）
+class RejectInvitationView(APIView):
+    permission_classes = [IsAuthenticated, IsStudent]
+
+    def post(self, request, taskid):
+        task = get_object_or_404(Task, id=taskid)
+
+        if request.user in task.invited_users.all():
+            task.invited_users.remove(request.user)
+            return Response({'detail': '已拒绝邀请'}, status=200)
+        return Response({'detail': '你未被邀请'}, status=403)
+
+# 队长邀请队员
+# class InviteUserView(APIView):
+#     permission_classes = [IsAuthenticated]
+
+#     def post(self, request, taskid):
+#         task = get_object_or_404(Task, id=taskid)
+
+#         if task.leader != request.user:
+#             return Response({'detail': '只有队长可以邀请'}, status=403)
+
+#         user_id = request.data.get('user_id')
+#         if not user_id:
+#             return Response({'detail': '缺少 user_id'}, status=400)
+
+#         try:
+#             user = CustomUser.objects.get(id=user_id)
+#             task.invited_users.add(user)
+#             return Response({'detail': f'已邀请 {user.nickname or user.username}'}, status=200)
+#         except CustomUser.DoesNotExist:
+#             return Response({'detail': '用户不存在'}, status=404)
+
+# 队长申请取消任务
+class RequestCancelTaskView(APIView):
+    permission_classes = [IsAuthenticated, IsStudent]
+
+    def post(self, request, taskid):
+        task = get_object_or_404(Task, id=taskid)
+
+        if task.leader != request.user:
+            return Response({'detail': '只有队长可以申请取消'}, status=403)
+
+        if task.cancel_requested:
+            return Response({'detail': '已申请取消，请等待老师审批'}, status=400)
+
+        task.cancel_requested = True
+        task.save()
+        return Response({'detail': '取消申请已提交'}, status=200)
+
+
+class ApproveCancelTaskView(APIView):
+    permission_classes = [IsAuthenticated, IsTeacher]
+
+    def post(self, request, taskid):
+        task = get_object_or_404(Task, id=taskid)
+
+        if not task.cancel_requested:
+            return Response({'detail': '未收到取消申请'}, status=400)
+
+        # 重置任务状态
+        task.leader = None
+        task.accepted_by.clear()
+        task.invited_users.clear()
+        task.is_started = False
+        task.is_accepted = False
+        task.cancel_requested = False  # ✅ 清除申请状态
+        task.save()
+
+        return Response({'detail': '任务取消申请已批准，任务已重置为未被接取'}, status=200)
+
+class ApproveCompleteTaskView(APIView):
+    permission_classes = [IsAuthenticated, IsTeacher]
+
+    def post(self, request, taskid):
+        task = get_object_or_404(Task, id=taskid)
+
+        if task.is_completed:
+            return Response({'detail': '任务已完成'}, status=400)
+
+        # 标记任务完成
+        task.is_completed = True
+        task.save()
+
+        # 单人任务直接加经验和代币
+        if task.task_type == 'solo':
+            participants = task.accepted_by.all()
+            for student in participants:
+                student.experience += task.experience_reward
+                student.tokens += task.token_reward
+                student.volunteerTime += task.volunteerTime_reward
+                student.save()
+
+        # 多人任务逻辑以后再补充
+        elif task.task_type == 'team':
+            pass
+
+        return Response({'detail': '任务已完成'}, status=200)
+    
+class MyTasksView(generics.ListAPIView):
+    """查看当前登录用户的未完成任务"""
+    serializer_class = TaskSerializer
+    permission_classes = [IsAuthenticated]
+
+    def get_queryset(self):
+        user = self.request.user
+        return (
+            Task.objects
+            .filter(accepted_by=user, is_completed=False)
+            .order_by('-created_at')
+        )
