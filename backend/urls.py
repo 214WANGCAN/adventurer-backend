@@ -20,12 +20,18 @@ from django.urls import path, include
 from uploads.views import upload_image  # 下面会创建这个视图
 from django.conf import settings
 from django.conf.urls.static import static
+from rest_framework_simplejwt.views import (
+    TokenObtainPairView,
+    TokenRefreshView,
+)
 urlpatterns = [
     path('admin/', admin.site.urls),
     path('users/', include('users.urls')),
     path('tasks/', include('tasks.urls')),
     path('notifications/', include('notifications.urls')),
     path('upload', upload_image, name='api-upload'),
+
+    path('token/refresh/', TokenRefreshView.as_view(), name='token_refresh'), # 刷新 access
 ]
 if settings.DEBUG:
     urlpatterns += static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)

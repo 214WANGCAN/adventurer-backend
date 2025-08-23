@@ -67,7 +67,7 @@ class LoginView(APIView):
         return Response({'error': '用户名或密码错误'}, status=status.HTTP_401_UNAUTHORIZED)
 
 class UserDetailView(APIView):
-    permission_classes = [AllowAny]  # 允许匿名访问（部分查询），但用 token 查询时仍会校验
+    permission_classes = [AllowAny]  # 允许匿名访问，但使用 me=true 时需要认证
     authentication_classes = [JWTAuthentication]
 
     def get(self, request):
@@ -75,15 +75,23 @@ class UserDetailView(APIView):
         identifier = request.query_params.get('identifier')
         me = request.query_params.get('me')
 
-        if me and request.user.is_authenticated:
-            user = request.user
+        if me:  # 请求 me=true
+            if request.user.is_authenticated:
+                user = request.user
+            else:
+                return Response(
+                    {'error': '未登录，无法获取当前用户信息'},
+                    status=status.HTTP_401_UNAUTHORIZED
+                )
         elif username:
             user = get_object_or_404(User, username=username)
         elif identifier:
             user = get_object_or_404(User, identifier=identifier)
         else:
-            return Response({'error': '请提供 username、identifier 或 me=true 之一'},
-                            status=status.HTTP_400_BAD_REQUEST)
+            return Response(
+                {'error': '请提供 username、identifier 或 me=true 之一'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
 
         serializer = UserSerializer(user)
         return Response(serializer.data)
