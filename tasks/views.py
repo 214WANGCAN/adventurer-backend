@@ -288,14 +288,39 @@ class ApproveCompleteTaskView(APIView):
         return Response({'detail': '任务已完成'}, status=200)
     
 class MyTasksView(generics.ListAPIView):
-    """查看当前登录用户的未完成任务"""
+    """根据用户身份返回“我的任务”：
+    - 学生：我接取的任务
+    - 老师：我发布的任务
+    支持 ?is_completed=true/false（默认 false）
+    """
     serializer_class = TaskSerializer
     permission_classes = [IsAuthenticated]
 
     def get_queryset(self):
         user = self.request.user
-        return (
-            Task.objects
-            .filter(accepted_by=user, is_completed=False)
-            .order_by('-created_at')
-        )
+
+        # 和上面列表接口保持一致的布尔参数解析
+        def _str_to_bool(v: str):
+            if v is None:
+                return None
+            return v.lower() in {"1", "true", "t", "yes", "y"}
+
+        is_completed_param = _str_to_bool(self.request.query_params.get("is_completed"))
+
+        qs = Task.objects.all()
+
+        # 默认只看未完成
+        if is_completed_param is None:
+            qs = qs.filter(is_completed=False)
+        else:
+            qs = qs.filter(is_completed=is_completed_param)
+
+        # 按身份切换筛选字段
+        if getattr(user, "role", None) == "teacher":
+            qs = qs.filter(publisher=user)
+        else:
+            # 默认为学生/其他：看我接取的
+            qs = qs.filter(accepted_by=user)
+
+        return qs.order_by("-created_at")
+
