@@ -23,7 +23,7 @@ class CustomUserAdmin(BaseUserAdmin):
     add_fieldsets = (
         (None, {
             'classes': ('wide',),
-            'fields': ('username', 'password1', 'password2', 'email', 'nickname', 'role'),  # 添加 role 到新增表单
+            'fields': ('username', 'password1', 'password2', 'role'),  # 添加 role 到新增表单
         }),
     )
 
