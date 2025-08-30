@@ -116,7 +116,7 @@ class TaskCreateView(generics.CreateAPIView):
 class TaskDetailView(generics.RetrieveAPIView):
     queryset = Task.objects.all()
     serializer_class = TaskDetailSerializer
-    permission_classes = [IsAuthenticated]
+    permission_classes = []
     lookup_field = 'id'
     lookup_url_kwarg = 'taskid'
 
@@ -324,3 +324,36 @@ class MyTasksView(generics.ListAPIView):
 
         return qs.order_by("-created_at")
 
+# —— 追加到文件尾部或合适位置 ——
+class UrgeApprovalView(APIView):
+    """学生催促老师审核任务完成"""
+    permission_classes = [IsAuthenticated, IsStudent]
+
+    def post(self, request, taskid):
+        task = get_object_or_404(Task, id=taskid)
+
+        # 任务已完成就不需要催促
+        if task.is_completed:
+            return Response({'detail': '任务已完成，无需催促'}, status=400)
+
+        # 必须是该任务的参与者
+        if request.user not in task.accepted_by.all():
+            return Response({'detail': '你未参与该任务，不能催促'}, status=403)
+
+        # 团队任务默认只允许队长催促（如需放开可去掉该判断）
+        if task.task_type == 'team' and task.leader != request.user:
+            return Response({'detail': '仅队长可以发起催促'}, status=403)
+
+        teacher = getattr(task, 'publisher', None)
+        if teacher is None or getattr(teacher, 'role', None) != 'teacher':
+            return Response({'detail': '任务没有有效的老师发布者'}, status=400)
+
+        # 发送通知
+        create_notification(
+            user=teacher,
+            type='completion_request',  # 你可在前端按 type 做分类展示
+            message=f'{request.user.nickname or request.user.username} 请求你审核任务《{task.title}》的完成情况',
+            task=task
+        )
+
+        return Response({'detail': '已通知老师尽快审核'}, status=200)

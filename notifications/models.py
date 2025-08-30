@@ -10,6 +10,7 @@ class Notification(models.Model):
         ('task_update', '任务状态变更'),
         ('cancel_request', '取消任务请求'),
         ('completed', '任务已完成'),
+        ('completion_request', '确认完成任务请求')
     ]
 
     user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='notifications')
