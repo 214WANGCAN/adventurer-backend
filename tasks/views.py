@@ -228,15 +228,77 @@ class RequestCancelTaskView(APIView):
     def post(self, request, taskid):
         task = get_object_or_404(Task, id=taskid)
 
-        if task.leader != request.user:
-            return Response({'detail': '只有队长可以申请取消'}, status=403)
+        # Solo tasks can be canceled by any participant, not just the leader
+        if task.task_type == 'solo' or task.leader == request.user:
+            # Ensure summary and detail are provided
+            summary = request.data.get('summary')
+            detail = request.data.get('detail')
+            if not summary or not detail:
+                return Response({'detail': '取消申请必须提供 summary 和 detail'}, status=400)
 
-        if task.cancel_requested:
-            return Response({'detail': '已申请取消，请等待老师审批'}, status=400)
+            # Set cancel_requested to True and save the request
+            if task.task_type == 'team':
+                task.cancel_requested = True
+                task.save()
 
-        task.cancel_requested = True
+            # Send a notification to the teacher
+            teacher = task.publisher
+            if teacher and teacher.role == 'teacher':
+                create_notification(
+                    user=teacher,
+                    type='cancel_request',
+                    message=f'{request.user.nickname or request.user.username}♪{task.title}♪{summary}♪{detail}',
+                    task=task
+                )
+
+            return Response({'detail': '取消申请已提交，请等待审核'}, status=200)
+
+        return Response({'detail': '只有队长或单人任务参与者才能申请取消'}, status=403)
+
+class RemoveParticipantFromSoloTaskView(APIView):
+    permission_classes = [IsAuthenticated, IsTeacher]
+
+    def post(self, request, taskid):
+        task = get_object_or_404(Task, id=taskid)
+
+        # Ensure the task is solo and is not already canceled
+        if task.task_type != 'solo' or task.is_completed:
+            return Response({'detail': '此任务无法移除参与者'}, status=400)
+
+        # Get the user to be removed
+        participant_id = request.data.get('participant_id')
+        if not participant_id:
+            return Response({'detail': '缺少 participant_id'}, status=400)
+
+        participant = get_object_or_404(CustomUser, id=participant_id)
+
+        # Ensure the participant is in the task
+        if participant not in task.accepted_by.all():
+            return Response({'detail': '该用户不在任务中'}, status=400)
+
+        # Remove the participant
+        task.accepted_by.remove(participant)
+
+        # If no participants left, mark task as canceled
+        if task.accepted_by.count() == 0:
+            task.is_completed = True
+            task.is_accepted = False
+            task.cancel_requested = True  # Mark it as canceled
+            task.save()
+
+            # Send a notification to the teacher
+            create_notification(
+                user=task.publisher,
+                type='task_canceled',
+                message=f'任务《{task.title}》因没有参与者被取消',
+                task=task
+            )
+
+            return Response({'detail': '任务已被取消，参与者已移除'}, status=200)
+
         task.save()
-        return Response({'detail': '取消申请已提交'}, status=200)
+
+        return Response({'detail': f'{participant.nickname or participant.username} 已被移除'}, status=200)
 
 
 class ApproveCancelTaskView(APIView):
