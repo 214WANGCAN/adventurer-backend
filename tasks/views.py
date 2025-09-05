@@ -373,7 +373,7 @@ class MyTasksView(generics.ListAPIView):
 
         # 默认只看未完成
         if is_completed_param is None:
-            qs = qs.filter(is_completed=False)
+            pass
         else:
             qs = qs.filter(is_completed=is_completed_param)
 
