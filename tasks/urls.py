@@ -24,4 +24,7 @@ urlpatterns = [
     path('my-tasks/', MyTasksView.as_view(), name='my-tasks'),
     path('<int:taskid>/urge-approval/', UrgeApprovalView.as_view(), name='urge-approval'),
     path('<int:taskid>/remove-student/', RemoveParticipantFromSoloTaskView.as_view(), name='remove-student'),
+    path('<int:taskid>/reject-cancel/', RejectCancelTaskView.as_view()),
+    path('<int:taskid>/reject-complete/', RejectCompleteTaskView.as_view()),
+
 ]

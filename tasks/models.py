@@ -63,3 +63,35 @@ class Task(models.Model):
 
     def __str__(self):
         return f"[{self.get_task_type_display()}] {self.title}"
+
+
+from django.db import models
+from django.conf import settings
+from django.db.models import Q
+
+# models.py（与之前相同即可）
+class TaskRequest(models.Model):
+    TYPE_COMPLETION = 'completion'   # 催审核
+    TYPE_CANCEL = 'cancel'           # 申请取消
+    TYPE_CHOICES = [(TYPE_COMPLETION, '催审核'), (TYPE_CANCEL, '申请取消')]
+
+    STATUS_PENDING = 'pending'
+    STATUS_APPROVED = 'approved'
+    STATUS_REJECTED = 'rejected'
+    STATUS_CHOICES = [(STATUS_PENDING, '待处理'), (STATUS_APPROVED, '已同意'), (STATUS_REJECTED, '已拒绝')]
+
+    task = models.ForeignKey('Task', on_delete=models.CASCADE, related_name='requests')
+    requester = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='task_requests')
+    type = models.CharField(max_length=20, choices=TYPE_CHOICES)
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default=STATUS_PENDING)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=['task', 'requester', 'type'],
+                condition=models.Q(status='pending'),
+                name='unique_pending_task_request_per_user_and_type'
+            )
+        ]

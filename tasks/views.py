@@ -19,8 +19,18 @@ from rest_framework import generics
 from django.conf import settings
 # 头部导入补充
 from django.db.models import Case, When, Value, IntegerField, Count, F
-
+from .models import Task, TaskRequest
 from .utils import active_task_count
+from django.db import transaction  # 可选：保证一致性
+# tasks/views.py 顶部工具
+def sync_task_cancel_flag(task):
+    from .models import TaskRequest  # 避免循环导入
+    has_pending_cancel = TaskRequest.objects.filter(
+        task=task, type=TaskRequest.TYPE_CANCEL, status=TaskRequest.STATUS_PENDING
+    ).exists()
+    if task.cancel_requested != has_pending_cancel:
+        task.cancel_requested = has_pending_cancel
+        task.save(update_fields=['cancel_requested'])
 
 
 def str_to_bool(value: str):
@@ -166,6 +176,18 @@ class ApplyTaskView(APIView):
                     )
 
         task.save()
+        
+        # ✅ 新增：通知发布老师，有学生接取了任务
+        teacher = getattr(task, 'publisher', None)
+        if teacher and getattr(teacher, 'role', None) == 'teacher':
+            create_notification(
+                user=teacher,
+                type='system',
+                message=f'{request.user.nickname or request.user.username} 接取了你的任务《{task.title}》',
+                task=task,
+                related_user=request.user
+            )
+
         return Response({'detail': '任务已申请成功'}, status=200)
 
 
@@ -200,93 +222,97 @@ class RejectInvitationView(APIView):
             return Response({'detail': '已拒绝邀请'}, status=200)
         return Response({'detail': '你未被邀请'}, status=403)
 
-# 队长邀请队员
-# class InviteUserView(APIView):
-#     permission_classes = [IsAuthenticated]
 
-#     def post(self, request, taskid):
-#         task = get_object_or_404(Task, id=taskid)
-
-#         if task.leader != request.user:
-#             return Response({'detail': '只有队长可以邀请'}, status=403)
-
-#         user_id = request.data.get('user_id')
-#         if not user_id:
-#             return Response({'detail': '缺少 user_id'}, status=400)
-
-#         try:
-#             user = CustomUser.objects.get(id=user_id)
-#             task.invited_users.add(user)
-#             return Response({'detail': f'已邀请 {user.nickname or user.username}'}, status=200)
-#         except CustomUser.DoesNotExist:
-#             return Response({'detail': '用户不存在'}, status=404)
-
-# 队长申请取消任务
 class RequestCancelTaskView(APIView):
     permission_classes = [IsAuthenticated, IsStudent]
 
     def post(self, request, taskid):
         task = get_object_or_404(Task, id=taskid)
 
-        # Solo tasks can be canceled by any participant, not just the leader
-        if task.task_type == 'solo' or task.leader == request.user:
-            # Ensure summary and detail are provided
-            summary = request.data.get('summary')
-            detail = request.data.get('detail')
-            if not summary or not detail:
-                return Response({'detail': '取消申请必须提供 summary 和 detail'}, status=400)
+        # solo：参与者可申请；team：队长可申请
+        if not (task.task_type == 'solo' or task.leader == request.user):
+            return Response({'detail': '只有队长或单人任务参与者才能申请取消'}, status=403)
 
-            # Set cancel_requested to True and save the request
-            if task.task_type == 'team':
-                task.cancel_requested = True
-                task.save()
+        summary = request.data.get('summary')
+        detail = request.data.get('detail')
+        if not summary or not detail:
+            return Response({'detail': '取消申请必须提供 summary 和 detail'}, status=400)
 
-            # Send a notification to the teacher
-            teacher = task.publisher
-            if teacher and teacher.role == 'teacher':
-                create_notification(
-                    user=teacher,
-                    type='cancel_request',
-                    message=f'{request.user.nickname or request.user.username}♪{task.title}♪{summary}♪{detail}',
-                    task=task
-                )
+        # ✅ 每个参与者各自只能有一个 pending 的取消申请
+        exists_pending = TaskRequest.objects.filter(
+            task=task, requester=request.user,
+            type=TaskRequest.TYPE_CANCEL,
+            status=TaskRequest.STATUS_PENDING
+        ).exists()
+        if exists_pending:
+            return Response({'detail': '你已提交过取消申请，等待老师处理'}, status=400)
 
-            return Response({'detail': '取消申请已提交，请等待审核'}, status=200)
+        TaskRequest.objects.create(
+            task=task, requester=request.user,
+            type=TaskRequest.TYPE_CANCEL,
+            status=TaskRequest.STATUS_PENDING
+        )
 
-        return Response({'detail': '只有队长或单人任务参与者才能申请取消'}, status=403)
+        # ✅ 任务层面的“有待处理取消申请”标志
+        task.cancel_requested = True
+        task.save(update_fields=['cancel_requested'])
+
+        teacher = task.publisher
+        if teacher and teacher.role == 'teacher':
+            create_notification(
+                user=teacher,
+                type='system',
+                message=(
+                    f"{request.user.nickname or request.user.username} 请求取消任务《{task.title}》"
+                    f"\n原因：{summary}\n详情：{detail}"
+                ),
+                task=task,
+                related_user=request.user
+            )
+
+        return Response({'detail': '取消申请已提交，请等待审核'}, status=200)
 
 class RemoveParticipantFromSoloTaskView(APIView):
     permission_classes = [IsAuthenticated, IsTeacher]
 
+    @transaction.atomic
     def post(self, request, taskid):
         task = get_object_or_404(Task, id=taskid)
 
-        # Ensure the task is solo and is not already canceled
         if task.task_type != 'solo' or task.is_completed:
             return Response({'detail': '此任务无法移除参与者'}, status=400)
 
-        # Get the user to be removed
         participant_id = request.data.get('participant_id')
         if not participant_id:
             return Response({'detail': '缺少 participant_id'}, status=400)
 
         participant = get_object_or_404(CustomUser, id=participant_id)
 
-        # Ensure the participant is in the task
         if participant not in task.accepted_by.all():
             return Response({'detail': '该用户不在任务中'}, status=400)
 
-        # Remove the participant
         task.accepted_by.remove(participant)
 
-        # If no participants left, mark task as canceled
+        # ✅ 新增：通知被移除者
+        create_notification(
+            user=participant,
+            type='system',
+            message=f'你已被移出任务《{task.title}》',
+            task=task,
+            related_user=request.user  # 老师
+        )
+
+        TaskRequest.objects.filter(task=task, requester=participant).delete()
+
         if task.accepted_by.count() == 0:
+            TaskRequest.objects.filter(task=task).delete()
+
             task.is_completed = True
             task.is_accepted = False
-            task.cancel_requested = True  # Mark it as canceled
+            task.cancel_requested = True
             task.save()
 
-            # Send a notification to the teacher
+            # 已有：通知老师任务被取消
             create_notification(
                 user=task.publisher,
                 type='task_canceled',
@@ -294,11 +320,9 @@ class RemoveParticipantFromSoloTaskView(APIView):
                 task=task
             )
 
-            return Response({'detail': '任务已被取消，参与者已移除'}, status=200)
+            return Response({'detail': '任务已被取消，参与者及相关请求已清空'}, status=200)
 
-        task.save()
-
-        return Response({'detail': f'{participant.nickname or participant.username} 已被移除'}, status=200)
+        return Response({'detail': f'{participant.nickname or participant.username} 已被移除，相关请求已清空'}, status=200)
 
 
 class ApproveCancelTaskView(APIView):
@@ -307,19 +331,27 @@ class ApproveCancelTaskView(APIView):
     def post(self, request, taskid):
         task = get_object_or_404(Task, id=taskid)
 
-        if not task.cancel_requested:
+        # 没有任何 pending 取消就不处理
+        if not TaskRequest.objects.filter(task=task, type=TaskRequest.TYPE_CANCEL, status=TaskRequest.STATUS_PENDING).exists():
             return Response({'detail': '未收到取消申请'}, status=400)
 
-        # 重置任务状态
+        # 重置任务
         task.leader = None
         task.accepted_by.clear()
         task.invited_users.clear()
         task.is_started = False
         task.is_accepted = False
-        task.cancel_requested = False  # ✅ 清除申请状态
+        task.is_completed = False
+        task.cancel_requested = False
         task.save()
 
+        # 所有“取消申请”的待处理请求记为已同意
+        TaskRequest.objects.filter(
+            task=task, type=TaskRequest.TYPE_CANCEL, status=TaskRequest.STATUS_PENDING
+        ).update(status=TaskRequest.STATUS_APPROVED)
+
         return Response({'detail': '任务取消申请已批准，任务已重置为未被接取'}, status=200)
+
 
 class ApproveCompleteTaskView(APIView):
     permission_classes = [IsAuthenticated, IsTeacher]
@@ -328,26 +360,120 @@ class ApproveCompleteTaskView(APIView):
         task = get_object_or_404(Task, id=taskid)
 
         if task.is_completed:
-            return Response({'detail': '任务已完成'}, status=400)
+            return Response({'detail': '任务已完成'}, status=200)
 
-        # 标记任务完成
         task.is_completed = True
         task.save()
 
-        # 单人任务直接加经验和代币
+        # 先记录当前参与者列表（发通知用）
+        participants = list(task.accepted_by.all())
+
         if task.task_type == 'solo':
-            participants = task.accepted_by.all()
             for student in participants:
                 student.experience += task.experience_reward
                 student.tokens += task.token_reward
                 student.volunteerTime += task.volunteerTime_reward
                 student.save()
+                # ✅ 新增：通知学生（包含奖励）
+                create_notification(
+                    user=student,
+                    type='completed',
+                    message=(
+                        f'任务《{task.title}》已通过老师审核并完成！\n'
+                        f'奖励：经验 +{task.experience_reward}、代币 +{task.token_reward}、志愿时长 +{task.volunteerTime_reward}'
+                    ),
+                    task=task
+                )
+        else:
+            # ✅ 新增：团队任务也给所有参与者通知（不涉及发奖逻辑）
+            for student in participants:
+                create_notification(
+                    user=student,
+                    type='completed',
+                    message=f'任务《{task.title}》已通过老师审核并完成！',
+                    task=task
+                )
 
-        # 多人任务逻辑以后再补充
-        elif task.task_type == 'team':
-            pass
+        TaskRequest.objects.filter(
+            task=task, type=TaskRequest.TYPE_COMPLETION, status=TaskRequest.STATUS_PENDING
+        ).update(status=TaskRequest.STATUS_APPROVED)
+
+        sync_task_cancel_flag(task)
 
         return Response({'detail': '任务已完成'}, status=200)
+
+
+
+class RejectCancelTaskView(APIView):
+    permission_classes = [IsAuthenticated, IsTeacher]
+
+    def post(self, request, taskid):
+        task = get_object_or_404(Task, id=taskid)
+        requester_id = request.data.get('requester_id')
+
+        qs = TaskRequest.objects.filter(
+            task=task, type=TaskRequest.TYPE_CANCEL, status=TaskRequest.STATUS_PENDING
+        )
+        if requester_id:
+            qs = qs.filter(requester_id=requester_id)
+
+        # 记录请求人
+        req_users = list(CustomUser.objects.filter(
+            id__in=qs.values_list('requester', flat=True)
+        ))
+
+        updated = qs.update(status=TaskRequest.STATUS_REJECTED)
+        if updated == 0:
+            return Response({'detail': '没有待处理的取消申请'}, status=400)
+
+        sync_task_cancel_flag(task)
+
+        # ✅ 新增：通知被拒绝者
+        for u in req_users:
+            create_notification(
+                user=u,
+                type='system',
+                message=f'你对任务《{task.title}》的取消申请被老师拒绝',
+                task=task
+            )
+
+        return Response({'detail': '已拒绝取消申请'}, status=200)
+
+
+class RejectCompleteTaskView(APIView):
+    permission_classes = [IsAuthenticated, IsTeacher]
+
+    def post(self, request, taskid):
+        task = get_object_or_404(Task, id=taskid)
+        requester_id = request.data.get('requester_id')
+
+        qs = TaskRequest.objects.filter(
+            task=task, type=TaskRequest.TYPE_COMPLETION, status=TaskRequest.STATUS_PENDING
+        )
+        if requester_id:
+            qs = qs.filter(requester_id=requester_id)
+
+        # 记录请求人
+        req_users = list(CustomUser.objects.filter(
+            id__in=qs.values_list('requester', flat=True)
+        ))
+
+        updated = qs.update(status=TaskRequest.STATUS_REJECTED)
+        if updated == 0:
+            return Response({'detail': '没有待处理的催审核请求'}, status=400)
+
+        # ✅ 新增：通知被拒绝者
+        for u in req_users:
+            create_notification(
+                user=u,
+                type='system',
+                message=f'你对任务《{task.title}》的完成审核催促被老师拒绝',
+                task=task
+            )
+
+        return Response({'detail': '已拒绝该任务的完成审核请求'}, status=200)
+
+
     
 class MyTasksView(generics.ListAPIView):
     """根据用户身份返回“我的任务”：
@@ -370,8 +496,6 @@ class MyTasksView(generics.ListAPIView):
         is_completed_param = _str_to_bool(self.request.query_params.get("is_completed"))
 
         qs = Task.objects.all()
-
-        # 默认只看未完成
         if is_completed_param is None:
             pass
         else:
@@ -387,35 +511,45 @@ class MyTasksView(generics.ListAPIView):
         return qs.order_by("-created_at")
 
 # —— 追加到文件尾部或合适位置 ——
+
 class UrgeApprovalView(APIView):
-    """学生催促老师审核任务完成"""
     permission_classes = [IsAuthenticated, IsStudent]
 
     def post(self, request, taskid):
         task = get_object_or_404(Task, id=taskid)
 
-        # 任务已完成就不需要催促
         if task.is_completed:
             return Response({'detail': '任务已完成，无需催促'}, status=400)
 
-        # 必须是该任务的参与者
+        # ✅ 任何参与者（accepted_by）都可催；不再限制队长
         if request.user not in task.accepted_by.all():
             return Response({'detail': '你未参与该任务，不能催促'}, status=403)
-
-        # 团队任务默认只允许队长催促（如需放开可去掉该判断）
-        if task.task_type == 'team' and task.leader != request.user:
-            return Response({'detail': '仅队长可以发起催促'}, status=403)
 
         teacher = getattr(task, 'publisher', None)
         if teacher is None or getattr(teacher, 'role', None) != 'teacher':
             return Response({'detail': '任务没有有效的老师发布者'}, status=400)
 
-        # 发送通知
+        # ✅ 每个参与者各自只能有一个 pending 的催促
+        exists_pending = TaskRequest.objects.filter(
+            task=task, requester=request.user,
+            type=TaskRequest.TYPE_COMPLETION,
+            status=TaskRequest.STATUS_PENDING
+        ).exists()
+        if exists_pending:
+            return Response({'detail': '你已提交过催促，等待老师处理'}, status=400)
+
+        TaskRequest.objects.create(
+            task=task, requester=request.user,
+            type=TaskRequest.TYPE_COMPLETION,
+            status=TaskRequest.STATUS_PENDING
+        )
+
         create_notification(
             user=teacher,
-            type='completion_request',  # 你可在前端按 type 做分类展示
+            type='system',
             message=f'{request.user.nickname or request.user.username} 请求你审核任务《{task.title}》的完成情况',
-            task=task
+            task=task,
+            related_user=request.user
         )
 
         return Response({'detail': '已通知老师尽快审核'}, status=200)

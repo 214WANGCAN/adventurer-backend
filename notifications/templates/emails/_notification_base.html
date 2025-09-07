@@ -1,0 +1,45 @@
+{% comment %}
+基础框架：背景、卡片、页脚、配色均来源于 context.theme
+使用表格布局保证邮件客户端兼容性
+{% endcomment %}
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>{{ subject|default:"冒险者工会通知" }}</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+</head>
+<body style="margin:0;padding:0;background:{{ theme.bg }};font-family:Arial,Helvetica,sans-serif;color:#333;">
+  <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="background:{{ theme.bg }};padding:24px 0;">
+    <tr>
+      <td align="center">
+        <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="600" style="width:600px;max-width:95%;background:{{ theme.card }};border-radius:12px;overflow:hidden;">
+          <!-- Header -->
+          <tr>
+            <td style="background:{{ theme.primary }};padding:20px 24px;text-align:center;">
+              <div style="font-size:20px;line-height:24px;color:#FFFFFF;font-weight:bold;">
+                冒险者工会通知
+              </div>
+            </td>
+          </tr>
+
+          <!-- Content slot -->
+          {% block content %}{% endblock %}
+
+          <!-- Footer -->
+          <tr>
+            <td style="padding:16px 24px;background:#f0f2f8;text-align:center;color:#7a8099;font-size:12px;line-height:18px;">
+              本邮件由系统自动发送，请勿直接回复。<br/>
+              © {{ now|default:None|date:"Y" }} 冒险者工会
+              <div style="margin-top:6px;">
+                <a href="{{ site_url }}" style="color:#7a8099;text-decoration:underline;">访问官网</a>
+                {% comment %} 可扩展：退订/通知偏好链接 {% endcomment %}
+              </div>
+            </td>
+          </tr>
+        </table>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>

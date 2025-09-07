@@ -168,3 +168,17 @@ STATIC_URL = 'static/'
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 STATIC_ROOT = BASE_DIR / 'staticfiles'
+
+#邮箱
+EMAIL_BACKEND = "django.core.mail.backends.smtp.EmailBackend"
+EMAIL_HOST = "in-v3.mailjet.com"
+EMAIL_PORT = 587
+EMAIL_USE_TLS = True    # TLS 模式
+# EMAIL_USE_SSL = True  # 如果你用 465 端口则用这个，别同时开
+
+EMAIL_HOST_USER = "你的 Mailjet API Key"
+EMAIL_HOST_PASSWORD = "你的 Mailjet Secret Key"
+
+DEFAULT_FROM_EMAIL = "adventurers-guild@gmail.com"  
+# ⚠️ 这里最好用你在 Mailjet 验证过的发件邮箱（可以就是 Gmail 地址，但必须在 Mailjet 控制台里验证过）
+EMAIL_TIMEOUT = 20
