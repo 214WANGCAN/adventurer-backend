@@ -261,7 +261,7 @@ class RequestCancelTaskView(APIView):
         if teacher and teacher.role == 'teacher':
             create_notification(
                 user=teacher,
-                type='system',
+                type='cancel_request',
                 message=(
                     f"{request.user.nickname or request.user.username} 请求取消任务《{task.title}》"
                     f"\n原因：{summary}\n详情：{detail}"
@@ -546,7 +546,7 @@ class UrgeApprovalView(APIView):
 
         create_notification(
             user=teacher,
-            type='system',
+            type='completion_request',
             message=f'{request.user.nickname or request.user.username} 请求你审核任务《{task.title}》的完成情况',
             task=task,
             related_user=request.user
