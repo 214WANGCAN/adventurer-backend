@@ -315,7 +315,7 @@ class RemoveParticipantFromSoloTaskView(APIView):
             # 已有：通知老师任务被取消
             create_notification(
                 user=task.publisher,
-                type='task_canceled',
+                type='system',
                 message=f'任务《{task.title}》因没有参与者被取消',
                 task=task
             )
