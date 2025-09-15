@@ -28,6 +28,8 @@ def _subject_for(notification: Notification) -> str:
         'completed': '任务已完成',
         'completion_request': '确认完成任务请求'
     }
+
+    
     base = subjects.get(notification.type, '通知')
     return f"[冒险者工会] {base}"
 
