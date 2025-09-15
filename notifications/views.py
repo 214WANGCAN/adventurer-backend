@@ -6,7 +6,7 @@ from rest_framework import permissions, status
 from .models import Notification
 from .serializers import NotificationSerializer
 from django.conf import settings
-
+from .utils import create_notification
 class TestCreateNotificationView(APIView):
     """测试用：创建一条通知"""
     permission_classes = [permissions.IsAuthenticated]
@@ -16,18 +16,10 @@ class TestCreateNotificationView(APIView):
         if not settings.DEBUG:
             return Response({'error': '生产环境禁止使用此接口'}, status=status.HTTP_403_FORBIDDEN)
 
-        from .models import Notification
-
-        notification = Notification.objects.create(
-            user=request.user,
-            type=request.data.get('type', 'system'),
-            message=request.data.get('message', '这是一条测试通知'),
-            related_user=request.user if request.data.get('with_related_user') else None
-        )
+        create_notification(request.user, request.data.get('type', 'system'), request.data.get('message', '这是一条测试通知'))
 
         return Response({
             'message': '测试通知已创建',
-            'notification_id': notification.id
         }, status=status.HTTP_201_CREATED)
 
 

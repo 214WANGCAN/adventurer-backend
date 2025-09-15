@@ -29,13 +29,13 @@ def _subject_for(notification: Notification) -> str:
         'completion_request': '确认完成任务请求'
     }
 
-    
+
     base = subjects.get(notification.type, '通知')
     return f"[冒险者工会] {base}"
 
 
 def _build_context(notification: Notification) -> dict:
-    site_url = getattr(settings, "SITE_URL", "https://example.com")
+    site_url = getattr(settings, "SITE_URL", "http://117.72.148.123/")
 
     task_url = None
     if notification.related_task_id:

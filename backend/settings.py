@@ -170,8 +170,7 @@ DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 STATIC_ROOT = BASE_DIR / 'staticfiles'
 
 #邮箱
-import ssl
-EMAIL_BACKEND = "django.core.mail.backends.smtp.EmailBackend"
+EMAIL_BACKEND = 'email_backends.ssl_unverified.SSLUnverifiedEmailBackend'
 EMAIL_HOST = "smtp.qq.com"
 EMAIL_PORT = 465
 EMAIL_USE_SSL = True
@@ -181,4 +180,3 @@ EMAIL_HOST_USER = "AidiGuild@foxmail.com"          # 发件人地址
 EMAIL_HOST_PASSWORD = ""
 DEFAULT_FROM_EMAIL = "冒险者工会通知 <AidiGuild@foxmail.com>"
 EMAIL_TIMEOUT = 20
-EMAIL_SSL_CONTEXT = ssl._create_unverified_context()
