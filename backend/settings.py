@@ -170,6 +170,7 @@ DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 STATIC_ROOT = BASE_DIR / 'staticfiles'
 
 #邮箱
+import ssl, certifi
 EMAIL_BACKEND = "django.core.mail.backends.smtp.EmailBackend"
 EMAIL_HOST = "smtp.qq.com"
 EMAIL_PORT = 465
@@ -177,7 +178,8 @@ EMAIL_USE_SSL = True
 EMAIL_USE_TLS = False
 
 EMAIL_HOST_USER = "AidiGuild@foxmail.com"          # 发件人地址
-EMAIL_HOST_PASSWORD = "ncgcxyarnscpdbfb"       # 不是登录密码，是上一步拿到的“授权码”
-DEFAULT_FROM_EMAIL = "冒险者工会通知 <你的QQ邮箱@qq.com>"
+EMAIL_HOST_PASSWORD = ""
+DEFAULT_FROM_EMAIL = "冒险者工会通知 <AidiGuild@foxmail.com>"
 EMAIL_TIMEOUT = 20
-DEFAULT_FROM_EMAIL = EMAIL_HOST_USER
+
+EMAIL_SSL_CONTEXT = ssl.create_default_context(cafile=certifi.where())
