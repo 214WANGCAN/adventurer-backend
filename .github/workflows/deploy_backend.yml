@@ -14,5 +14,8 @@ jobs:
           key: ${{ secrets.SSH_KEY }}
           script: |
             cd /www/wwwroot/backend/adventurer-backend
-            git fetch --all
-            git reset --hard origin/main
+            if git fetch --all; then
+              git reset --hard origin/main
+            else
+              echo "❌ git fetch 失败，跳过 reset"
+            fi
