@@ -8,7 +8,7 @@ from users.models import CustomUser  # 引入用户模型
 class AcceptedUserSerializer(serializers.ModelSerializer):
     class Meta:
         model = CustomUser
-        fields = ['id', 'nickname', 'avatar']  # 只返回你关心的信息
+        fields = ['id', 'nickname', 'realname', 'avatar']  # 只返回你关心的信息
 
 class TaskSerializer(serializers.ModelSerializer):
     publisher_nickname = serializers.CharField(source='publisher.nickname', read_only=True)
@@ -20,7 +20,7 @@ class TaskSerializer(serializers.ModelSerializer):
     class Meta:
         model = Task
         fields = [
-            'id', 'title', 'description', 'task_type', 'deadline',
+            'id', 'title', 'description', 'task_type', 'maximum_users', 'deadline',
             'experience_reward', 'token_reward', 'volunteerTime_reward',
             'publisher_nickname', 'publisher_avatar',
             'accepted_by',  # 这里现在是对象数组，包含id、nickname、avatar

@@ -15,6 +15,7 @@ urlpatterns = [
     path('create/', TaskCreateView.as_view()),
 
     path('<int:taskid>/', TaskDetailView.as_view()),
+    path('<int:taskid>/edit/', TaskUpdateView.as_view(), name='task-edit'),
     path('<int:taskid>/apply/', ApplyTaskView.as_view()),
     path('<int:taskid>/accept/', AcceptInvitationView.as_view()),
     path('<int:taskid>/reject/', RejectInvitationView.as_view()),

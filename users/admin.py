@@ -5,7 +5,7 @@ from .models import CustomUser, UserTitle
 @admin.register(CustomUser)
 class CustomUserAdmin(BaseUserAdmin):
     model = CustomUser
-    list_display = ('username', 'identifier', 'role', 'nickname', 'email', 'level', 'experience', 'tokens', 'is_staff')
+    list_display = ('username', 'identifier', 'role', 'nickname', 'realname', 'email', 'level', 'experience', 'tokens', 'is_staff')
     list_filter = ('role', 'level', 'is_staff')
     search_fields = ('username', 'nickname', 'email', 'identifier')
     ordering = ('-experience',)
@@ -14,7 +14,7 @@ class CustomUserAdmin(BaseUserAdmin):
     fieldsets = (
         (None, {'fields': ('username', 'password')}),
         ('个人信息', {
-            'fields': ('nickname', 'email', 'avatar', 'bio', 'experience', 'tokens', 'level', 'identifier', 'title', 'role')
+            'fields': ('nickname', 'realname', 'email', 'avatar', 'bio', 'experience', 'tokens', 'level', 'identifier', 'title', 'role')
         }),
         ('权限设置', {'fields': ('is_active', 'is_staff', 'is_superuser', 'groups', 'user_permissions')}),
         ('其他', {'fields': ('last_login', 'date_joined')}),

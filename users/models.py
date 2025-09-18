@@ -30,6 +30,7 @@ class CustomUser(AbstractUser):
     role = models.CharField(max_length=20, choices=ROLE_CHOICES, default='student')
 
     nickname = models.CharField(max_length=50)
+    realname = models.CharField(max_length=50,default="none")
     avatar = models.CharField(max_length=50,default='none')
     bio = models.TextField(blank=True, null=True, help_text="个性签名 / 冒险者自我介绍")
     experience = models.PositiveIntegerField(default=0)

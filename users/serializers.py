@@ -15,7 +15,7 @@ class UserSerializer(serializers.ModelSerializer):
     class Meta:
         model = CustomUser
         fields = [
-            'identifier', 'username', 'nickname', 'email', 'avatar', 'bio',
+            'identifier', 'username', 'nickname', 'realname', 'email', 'avatar', 'bio',
             'experience', 'next_level_xp', 'current_level_xp' , 'tokens', 'volunteerTime', 'level', 'title', 'role',
         ]
     

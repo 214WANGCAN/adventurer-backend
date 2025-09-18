@@ -48,7 +48,7 @@ def _subject_for(notification: Notification) -> str:
 
 
 def _build_context(notification: Notification) -> dict:
-    site_url = getattr(settings, "SITE_URL", "http://117.72.148.123/")
+    site_url = getattr(settings, "SITE_URL", "http://117.72.148.123")
 
     task_url = None
     if notification.related_task_id:

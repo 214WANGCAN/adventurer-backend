@@ -122,6 +122,114 @@ class TaskCreateView(generics.CreateAPIView):
     def perform_create(self, serializer):
         serializer.save(publisher=self.request.user)
 
+#编辑任务
+# —— 放在本文件合适位置（例如其他 View 后）——
+
+class TaskUpdateView(generics.UpdateAPIView):
+    """
+    编辑任务（仅发布者老师可改）
+    - 支持 PUT / PATCH（建议 PATCH 部分更新）
+    - 关键校验：
+        * 已完成任务不可编辑
+        * 若任务已被接取（is_accepted=True），不允许修改 task_type
+        * maximum_users 不可小于当前已接取人数
+        * deadline 不可早于当前时间
+        * required_level 必须是合法等级
+        * 奖励数值不可为负
+    - 成功后通知当前参与者/受邀者
+    """
+    serializer_class = TaskSerializer
+    permission_classes = [IsAuthenticated, IsTeacher]
+    lookup_field = 'id'
+    lookup_url_kwarg = 'taskid'
+
+    def get_queryset(self):
+        # 只允许老师编辑自己发布的任务
+        return Task.objects.filter(publisher=self.request.user)
+
+    def partial_update(self, request, *args, **kwargs):
+        # 让 PATCH 默认走 partial=True
+        kwargs['partial'] = True
+        return self.update(request, *args, **kwargs)
+
+    def update(self, request, *args, **kwargs):
+        task: Task = self.get_object()
+
+        if task.is_completed:
+            return Response({'detail': '任务已完成，无法编辑'}, status=status.HTTP_400_BAD_REQUEST)
+
+        data = request.data.copy()
+
+        # —— 业务校验 —— 
+        # 1) 不允许在已被接取后改任务类型
+        if 'task_type' in data and str(data['task_type']) != str(task.task_type) and task.is_accepted:
+            return Response({'detail': '任务已被接取，不可更改任务类型'}, status=status.HTTP_400_BAD_REQUEST)
+
+        # 2) maximum_users 不可小于当前已接取人数
+        if 'maximum_users' in data:
+            try:
+                new_max = int(data['maximum_users'])
+            except (TypeError, ValueError):
+                return Response({'detail': 'maximum_users 必须是整数'}, status=status.HTTP_400_BAD_REQUEST)
+            if new_max < task.accepted_by.count():
+                return Response({'detail': 'maximum_users 不可小于已接取人数'}, status=status.HTTP_400_BAD_REQUEST)
+            if new_max < 1:
+                return Response({'detail': 'maximum_users 必须 ≥ 1'}, status=status.HTTP_400_BAD_REQUEST)
+
+        # 3) deadline 不可改到过去
+        if 'deadline' in data and data['deadline']:
+            # 若前端传 ISO 字符串，交给序列化器解析；这里做一个软校验
+            try:
+                # 如果你们的序列化器能正确解析时区，这里也可以省略
+                from django.utils.dateparse import parse_datetime
+                _dt = parse_datetime(data['deadline'])
+                if _dt and _dt < timezone.now():
+                    return Response({'detail': 'deadline 不能早于当前时间'}, status=status.HTTP_400_BAD_REQUEST)
+            except Exception:
+                pass
+
+        # 4) required_level 合法性
+        if 'required_level' in data:
+            valid_levels = {lvl for _, lvl in settings.LEVEL_THRESHOLDS}
+            if data['required_level'] not in valid_levels:
+                return Response({'detail': 'required_level 非法'}, status=status.HTTP_400_BAD_REQUEST)
+
+        # 5) 奖励字段非负
+        for field in ('experience_reward', 'token_reward', 'volunteerTime_reward'):
+            if field in data:
+                try:
+                    if int(data[field]) < 0:
+                        return Response({'detail': f'{field} 不能为负数'}, status=status.HTTP_400_BAD_REQUEST)
+                except (TypeError, ValueError):
+                    return Response({'detail': f'{field} 必须是整数'}, status=status.HTTP_400_BAD_REQUEST)
+
+        # —— 执行更新（支持 PUT / PATCH）——
+        partial = kwargs.pop('partial', False)
+        serializer = self.get_serializer(task, data=data, partial=partial)
+        serializer.is_valid(raise_exception=True)
+        self.perform_update(serializer)
+
+        # —— 通知当前参与者与受邀者（可选，但很有用）——
+        try:
+            changed_fields = list(serializer.validated_data.keys())
+            if changed_fields:
+                # 给已接取与受邀的同学各发一条系统通知
+                targets = list(task.accepted_by.all()) + list(task.invited_users.all())
+                for u in targets:
+                    create_notification(
+                        user=u,
+                        type='system',
+                        message=f'任务《{task.title}》已被老师更新：{", ".join(changed_fields)}',
+                        task=task,
+                        related_user=request.user
+                    )
+        except Exception:
+            # 静默忽略通知失败，确保核心更新成功
+            pass
+
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
+
 # 任务详情
 class TaskDetailView(generics.RetrieveAPIView):
     queryset = Task.objects.all()
@@ -145,13 +253,20 @@ class ApplyTaskView(APIView):
         if active_task_count(request.user) >= getattr(settings, 'MAX_ACTIVE_TASKS', 6):
             return Response({'detail': '你已达到同时进行任务的上限（6个）'}, status=403)
 
+        # 🚫 防止重复申请
+        if request.user in task.accepted_by.all():
+            return Response({'detail': '你已接取过该任务，不能重复接取'}, status=400)
+
+
         # 从请求中获取 invited_identifiers（使用 identifier 而不是数据库 id）
         invited_identifiers = request.data.get('invited_identifiers', [])
         task.accepted_by.add(request.user)
 
         if task.task_type == 'solo':
             task.is_started = True
-            task.is_accepted = True
+            # ✅ 只有人数满了才设置 is_accepted
+            if task.accepted_by.count() >= task.maximum_users:
+                task.is_accepted = True
 
         elif task.task_type == 'team':
             task.leader = request.user
