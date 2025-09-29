@@ -30,7 +30,7 @@ urlpatterns = [
     path('tasks/', include('tasks.urls')),
     path('notifications/', include('notifications.urls')),
     path('upload', upload_image, name='api-upload'),
-
+    path("qr/", include("qrcode_api.urls")),
     path('token/refresh/', TokenRefreshView.as_view(), name='token_refresh'), # 刷新 access
 ]
 if settings.DEBUG:

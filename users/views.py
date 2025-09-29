@@ -38,10 +38,21 @@ class UpdateProfileView(APIView):
         user = request.user  # 当前登录用户
         nickname = request.data.get("nickname")
         avatar = request.data.get("avatar")
-
+        
+        # 校验 nickname
         if nickname is not None:
+            if len(nickname) > 50:
+                return Response({
+                    "message": "昵称长度不能超过50个字符"
+                }, status=status.HTTP_400_BAD_REQUEST)
             user.nickname = nickname
+
+        # 校验 avatar
         if avatar is not None:
+            if len(avatar) > 50:
+                return Response({
+                    "message": "头像地址长度不能超过50个字符"
+                }, status=status.HTTP_400_BAD_REQUEST)
             user.avatar = avatar
 
         user.save()

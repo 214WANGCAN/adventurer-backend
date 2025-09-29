@@ -6,7 +6,7 @@ from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
-
+from rest_framework.permissions import AllowAny
 from .models import Task
 from .serializers import TaskSerializer, TaskDetailSerializer
 from users.models import CustomUser  # 根据你的用户模块位置调整
@@ -234,7 +234,7 @@ class TaskUpdateView(generics.UpdateAPIView):
 class TaskDetailView(generics.RetrieveAPIView):
     queryset = Task.objects.all()
     serializer_class = TaskDetailSerializer
-    permission_classes = []
+    permission_classes = [AllowAny]
     lookup_field = 'id'
     lookup_url_kwarg = 'taskid'
 
