@@ -32,7 +32,8 @@ class TaskDetailSerializer(serializers.ModelSerializer):
     # accepted_by = serializers.StringRelatedField(many=True)
     invited_users = serializers.StringRelatedField(many=True)
     leader = serializers.StringRelatedField()
-
+    publisher_nickname = serializers.CharField(source='publisher.nickname', read_only=True)
+    publisher_avatar = serializers.CharField(source='publisher.avatar', read_only=True)
     accepted_by = AcceptedUserSerializer(many=True, read_only=True)  # 嵌套序列化用户信息
 
     class Meta:
