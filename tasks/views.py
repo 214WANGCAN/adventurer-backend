@@ -12,6 +12,7 @@ from .serializers import TaskSerializer, TaskDetailSerializer
 from users.models import CustomUser  # 根据你的用户模块位置调整
 from .pagination import TaskPagination
 from notifications.utils import create_notification
+from rest_framework.exceptions import ValidationError
 
 from django.db.models import Case, When, Value, IntegerField
 from django.utils import timezone
@@ -117,10 +118,26 @@ class TaskListView(generics.ListAPIView):
 # 发布任务（老师）
 class TaskCreateView(generics.CreateAPIView):
     serializer_class = TaskSerializer
-    permission_classes = [IsAuthenticated, IsTeacher]
+    permission_classes = [IsAuthenticated]  # 老师和学生都可访问
 
     def perform_create(self, serializer):
-        serializer.save(publisher=self.request.user)
+        user = self.request.user
+
+        with transaction.atomic():
+            # 先保存任务（publisher 固定为自己）
+            task = serializer.save(publisher=user)
+
+            # 学生：校验已在 serializer 做过，但这里再保护一次并扣款
+            if getattr(user, "role", None) == "student":
+                # 行级锁，防止并发超扣
+                from users.models import CustomUser  # 按你的实际路径
+                user_locked = CustomUser.objects.select_for_update().get(pk=user.pk)
+
+                if task.token_reward >= user_locked.tokens:
+                    raise ValidationError({"token_reward": "学生发布任务的奖励必须小于当前余额。"})
+
+                # 安全扣款
+                CustomUser.objects.filter(pk=user_locked.pk).update(tokens=F('tokens') - task.token_reward)
 
 #编辑任务
 # —— 放在本文件合适位置（例如其他 View 后）——
@@ -407,7 +424,8 @@ class RemoveParticipantFromSoloTaskView(APIView):
             return Response({'detail': '该用户不在任务中'}, status=400)
 
         task.accepted_by.remove(participant)
-
+        task.is_accepted = False
+        
         # ✅ 新增：通知被移除者
         create_notification(
             user=participant,
@@ -438,26 +456,45 @@ class RemoveParticipantFromSoloTaskView(APIView):
             return Response({'detail': '任务已被取消，参与者及相关请求已清空'}, status=200)
 
         return Response({'detail': f'{participant.nickname or participant.username} 已被移除，相关请求已清空'}, status=200)
-
-
 class ApproveCancelTaskView(APIView):
     permission_classes = [IsAuthenticated, IsTeacher]
 
     def post(self, request, taskid):
         task = get_object_or_404(Task, id=taskid)
 
-        # 没有任何 pending 取消就不处理
-        if not TaskRequest.objects.filter(task=task, type=TaskRequest.TYPE_CANCEL, status=TaskRequest.STATUS_PENDING).exists():
-            return Response({'detail': '未收到取消申请'}, status=400)
+        # 从请求参数获取是否标记为已完成
+        # 支持 JSON body 或 query 参数
+        mark_completed_param = request.data.get("mark_completed") or request.query_params.get("mark_completed")
 
-        # 重置任务
-        task.leader = None
-        task.accepted_by.clear()
-        task.invited_users.clear()
-        task.is_started = False
-        task.is_accepted = False
-        task.is_completed = False
-        task.cancel_requested = False
+        def _str_to_bool(v: str):
+            if v is None:
+                return False
+            return str(v).lower() in {"1", "true", "t", "yes", "y"}
+
+        mark_completed = _str_to_bool(mark_completed_param)
+
+        # 没有任何 pending 取消就不处理（可选保留）
+        # if not TaskRequest.objects.filter(task=task, type=TaskRequest.TYPE_CANCEL, status=TaskRequest.STATUS_PENDING).exists():
+        #     return Response({'detail': '未收到取消申请'}, status=400)
+
+        if mark_completed:
+            # 标记任务为已完成
+            task.leader = None
+            task.accepted_by.clear()
+            task.invited_users.clear()
+            task.is_completed = True
+            task.is_started = False
+            task.is_accepted = False
+        else:
+            # 重置任务为未被接取状态
+            task.leader = None
+            task.accepted_by.clear()
+            task.invited_users.clear()
+            task.is_started = False
+            task.is_accepted = False
+            task.is_completed = False
+            task.cancel_requested = False
+
         task.save()
 
         # 所有“取消申请”的待处理请求记为已同意
@@ -465,7 +502,12 @@ class ApproveCancelTaskView(APIView):
             task=task, type=TaskRequest.TYPE_CANCEL, status=TaskRequest.STATUS_PENDING
         ).update(status=TaskRequest.STATUS_APPROVED)
 
-        return Response({'detail': '任务取消申请已批准，任务已重置为未被接取'}, status=200)
+        detail_msg = (
+            "任务取消申请已批准，任务已标记为已完成"
+            if mark_completed
+            else "任务取消申请已批准，任务已重置为未被接取"
+        )
+        return Response({"detail": detail_msg}, status=200)
 
 
 class ApproveCompleteTaskView(APIView):
@@ -591,10 +633,16 @@ class RejectCompleteTaskView(APIView):
 
     
 class MyTasksView(generics.ListAPIView):
-    """根据用户身份返回“我的任务”：
-    - 学生：我接取的任务
-    - 老师：我发布的任务
-    支持 ?is_completed=true/false（默认 false）
+    """
+    根据用户身份返回“我的任务”：
+    - 默认行为：
+        - 学生：我接取的任务
+        - 老师：我发布的任务
+    - 覆盖默认行为：
+        - 通过 ?mine=published 查看“我发布的任务”
+        - 通过 ?mine=accepted  查看“我接取的任务”
+
+    还支持 ?is_completed=true/false（默认不过滤）
     """
     serializer_class = TaskSerializer
     permission_classes = [IsAuthenticated]
@@ -602,7 +650,6 @@ class MyTasksView(generics.ListAPIView):
     def get_queryset(self):
         user = self.request.user
 
-        # 和上面列表接口保持一致的布尔参数解析
         def _str_to_bool(v: str):
             if v is None:
                 return None
@@ -610,20 +657,32 @@ class MyTasksView(generics.ListAPIView):
 
         is_completed_param = _str_to_bool(self.request.query_params.get("is_completed"))
 
+        # 新增：显式指定查看范围
+        mine = self.request.query_params.get("mine")  # 取值: "published" | "accepted" | None
+
+        if mine:
+            mine = mine.lower().strip()
+
         qs = Task.objects.all()
-        if is_completed_param is None:
-            pass
-        else:
+
+        if is_completed_param is not None:
             qs = qs.filter(is_completed=is_completed_param)
 
-        # 按身份切换筛选字段
-        if getattr(user, "role", None) == "teacher":
-            qs = qs.filter(publisher=user)
+        # 如果提供了 mine 参数，则不再按角色分流
+        if mine in {"published", "accepted"}:
+            if mine == "published":
+                qs = qs.filter(publisher=user)
+            else:  # "accepted"
+                qs = qs.filter(accepted_by=user)
         else:
-            # 默认为学生/其他：看我接取的
-            qs = qs.filter(accepted_by=user)
+            # 原先逻辑：老师看发布的，其他看接取的
+            if getattr(user, "role", None) == "teacher":
+                qs = qs.filter(publisher=user)
+            else:
+                qs = qs.filter(accepted_by=user)
 
         return qs.order_by("-created_at")
+
 
 # —— 追加到文件尾部或合适位置 ——
 
