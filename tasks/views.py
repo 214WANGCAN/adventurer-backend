@@ -22,6 +22,7 @@ from django.conf import settings
 from django.db.models import Case, When, Value, IntegerField, Count, F
 from .models import Task, TaskRequest
 from .utils import active_task_count
+from rest_framework.exceptions import PermissionDenied
 from django.db import transaction  # 可选：保证一致性
 # tasks/views.py 顶部工具
 def sync_task_cancel_flag(task):
@@ -47,6 +48,14 @@ class IsStudent(permissions.BasePermission):
 class IsTeacher(permissions.BasePermission):
     def has_permission(self, request, view):
         return request.user.role == 'teacher'
+
+def IsPublisher(request, task):
+    """
+    仅允许：当前用户为老师 且 为该任务的发布者
+    不满足则抛出 403
+    """
+    if  task.publisher_id != request.user.id:
+        raise PermissionDenied("仅发布该任务的老师可操作。")
 
 class TaskListView(generics.ListAPIView):
     serializer_class = TaskSerializer
@@ -114,8 +123,7 @@ class TaskListView(generics.ListAPIView):
         ).order_by("above_user_level", "accepted_order", "-created_at")
 
         return qs
-
-# 发布任务（老师）
+    
 class TaskCreateView(generics.CreateAPIView):
     serializer_class = TaskSerializer
     permission_classes = [IsAuthenticated]  # 老师和学生都可访问
@@ -127,18 +135,30 @@ class TaskCreateView(generics.CreateAPIView):
             # 先保存任务（publisher 固定为自己）
             task = serializer.save(publisher=user)
 
-            # 学生：校验已在 serializer 做过，但这里再保护一次并扣款
+            # 如果是学生
             if getattr(user, "role", None) == "student":
+                # 校验金额
+                if task.token_reward < 6:
+                    raise ValidationError({"token_reward": "学生发布任务的金额必须大于或等于 6。"})
+
                 # 行级锁，防止并发超扣
-                from users.models import CustomUser  # 按你的实际路径
                 user_locked = CustomUser.objects.select_for_update().get(pk=user.pk)
 
-                if task.token_reward >= user_locked.tokens:
-                    raise ValidationError({"token_reward": "学生发布任务的奖励必须小于当前余额。"})
+                if task.token_reward > user_locked.tokens:
+                    raise ValidationError({"token_reward": "余额不足，无法发布任务。"})
 
-                # 安全扣款
+                # 扣款（学生实际扣掉 token_reward）
                 CustomUser.objects.filter(pk=user_locked.pk).update(tokens=F('tokens') - task.token_reward)
 
+                # 调整任务的真实奖励（比学生扣的钱少 5）
+                # 计算真实奖励与经验值
+                real_reward = task.token_reward - 5
+                experience = int(real_reward * 0.1)
+
+                # 更新任务奖励和经验
+                task.token_reward = real_reward
+                task.experience_reward = experience
+                task.save(update_fields=["token_reward", "experience_reward"])
 #编辑任务
 # —— 放在本文件合适位置（例如其他 View 后）——
 
@@ -263,6 +283,9 @@ class ApplyTaskView(APIView):
 
         if task.is_completed:
             return Response({'detail': '任务已结束'}, status=400)
+
+        if task.publisher == request.user:
+            return Response({'detail': '无法接取自己发布的任务'}, status=400)
 
         if task.task_type == "team" and task.leader is not None or task.maximum_users <= task.accepted_by.count():
             return Response({'detail': '任务已被他人申请'}, status=400)
@@ -390,7 +413,7 @@ class RequestCancelTaskView(APIView):
         task.save(update_fields=['cancel_requested'])
 
         teacher = task.publisher
-        if teacher and teacher.role == 'teacher':
+        if teacher:
             create_notification(
                 user=teacher,
                 type='cancel_request',
@@ -405,11 +428,13 @@ class RequestCancelTaskView(APIView):
         return Response({'detail': '取消申请已提交，请等待审核'}, status=200)
 
 class RemoveParticipantFromSoloTaskView(APIView):
-    permission_classes = [IsAuthenticated, IsTeacher]
+    permission_classes = [IsAuthenticated]
 
     @transaction.atomic
     def post(self, request, taskid):
         task = get_object_or_404(Task, id=taskid)
+
+        IsPublisher(request,task)
 
         if task.task_type != 'solo' or task.is_completed:
             return Response({'detail': '此任务无法移除参与者'}, status=400)
@@ -457,10 +482,13 @@ class RemoveParticipantFromSoloTaskView(APIView):
 
         return Response({'detail': f'{participant.nickname or participant.username} 已被移除，相关请求已清空'}, status=200)
 class ApproveCancelTaskView(APIView):
-    permission_classes = [IsAuthenticated, IsTeacher]
+    permission_classes = [IsAuthenticated]
 
     def post(self, request, taskid):
         task = get_object_or_404(Task, id=taskid)
+
+        IsPublisher(request,task)
+
 
         # 从请求参数获取是否标记为已完成
         # 支持 JSON body 或 query 参数
@@ -511,10 +539,12 @@ class ApproveCancelTaskView(APIView):
 
 
 class ApproveCompleteTaskView(APIView):
-    permission_classes = [IsAuthenticated, IsTeacher]
+    permission_classes = [IsAuthenticated]
 
     def post(self, request, taskid):
         task = get_object_or_404(Task, id=taskid)
+
+        IsPublisher(request,task)
 
         if task.is_completed:
             return Response({'detail': '任务已完成'}, status=200)
@@ -562,10 +592,13 @@ class ApproveCompleteTaskView(APIView):
 
 
 class RejectCancelTaskView(APIView):
-    permission_classes = [IsAuthenticated, IsTeacher]
+    permission_classes = [IsAuthenticated]
 
     def post(self, request, taskid):
         task = get_object_or_404(Task, id=taskid)
+
+        IsPublisher(request,task)
+
         requester_id = request.data.get('requester_id')
 
         qs = TaskRequest.objects.filter(
@@ -598,10 +631,13 @@ class RejectCancelTaskView(APIView):
 
 
 class RejectCompleteTaskView(APIView):
-    permission_classes = [IsAuthenticated, IsTeacher]
+    permission_classes = [IsAuthenticated]
 
     def post(self, request, taskid):
         task = get_object_or_404(Task, id=taskid)
+
+        IsPublisher(request,task)
+
         requester_id = request.data.get('requester_id')
 
         qs = TaskRequest.objects.filter(
@@ -700,7 +736,7 @@ class UrgeApprovalView(APIView):
             return Response({'detail': '你未参与该任务，不能催促'}, status=403)
 
         teacher = getattr(task, 'publisher', None)
-        if teacher is None or getattr(teacher, 'role', None) != 'teacher':
+        if teacher is None:
             return Response({'detail': '任务没有有效的老师发布者'}, status=400)
 
         # ✅ 每个参与者各自只能有一个 pending 的催促

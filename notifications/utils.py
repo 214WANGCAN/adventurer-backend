@@ -48,7 +48,7 @@ def _subject_for(notification: Notification) -> str:
 
 
 def _build_context(notification: Notification) -> dict:
-    site_url = getattr(settings, "SITE_URL", "http://117.72.148.123")
+    site_url = getattr(settings, "SITE_URL", "https://www.aidiventure.com")
 
     task_url = None
     if notification.related_task_id:
@@ -73,7 +73,7 @@ def _build_context(notification: Notification) -> dict:
 
 def send_notification_email(notification: Notification):
     subject = _subject_for(notification)
-    from_email = getattr(settings, "DEFAULT_FROM_EMAIL", "http://117.72.148.123/")
+    from_email = getattr(settings, "DEFAULT_FROM_EMAIL", "https://www.aidiventure.com")
     to = [notification.user.email]
 
     context = _build_context(notification)
@@ -100,7 +100,7 @@ def _send_notification_email_safe(notification_id: int):
         notification = Notification.objects.select_related("user").get(id=notification_id)
 
         subject = _subject_for(notification)
-        from_email = getattr(settings, "DEFAULT_FROM_EMAIL", "http://117.72.148.123/")
+        from_email = getattr(settings, "DEFAULT_FROM_EMAIL", "https://www.aidiventure.com")
         to = [notification.user.email]
 
         context = _build_context(notification)
